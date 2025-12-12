@@ -1,9 +1,69 @@
+## Requirements
+
+- Python 3.10+
+- PySide6
+- python-can
+- anyio
+- numpy
+- (Optional for advanced features: matplotlib, pandas)
+
+Install all dependencies with:
+
+```powershell
+pip install -r requirements.txt
+```
+
+## Map Offset Policy
+
+All map offsets, validation, and safety logic in this tool are based on a single, specific N54 bin file (MSD80 I8A0S, 7614480/7614481). These offsets are not valid for other N54 software versions or DME variants.
+
+**Warning:** Attempting to use this tool with other N54 bin files (e.g., 7603537, 7614482, 7614483, etc.) without proper offset migration will result in incorrect map locations and may cause ECU damage. Offset migration for other bins is not supported in this release.
+## Usage: Starting the CLI and GUI
+
+### Start the CLI
+
+From the project root:
+
+```powershell
+python -m flash_tool.cli
+```
+
+This launches the interactive command-line interface.
+
+#### Main CLI Options:
+- Flash ECU (direct CAN/UDS)
+- Read/Write Maps
+- Backup/Restore
+- Diagnostics (OBD-II, DME)
+- Safety Validation
+- Hardware/Adapter Scan
+- Logging and Audit
+- Advanced Tools (bench, CRC, etc.)
+
+### Start the GUI
+
+From the project root:
+
+```powershell
+python -m flash_tool.gui.app
+```
+
+This launches the full graphical interface (PySide6 required).
+
+#### Main GUI Features:
+- Visual Map Editor
+- Flash/Backup/Restore Wizards
+- Live Data Dashboards
+- Tuning Parameter Editors
+- Logging and Diagnostics
+- Connection/Adapter Management
+- Safety and Validation Tools
+
+Both interfaces use the same backend and safety systems. All map/flash operations are validated and logged.
 # BMW N54 Flash Tool
 
-ECU diagnostics, tuning, and map flashing for BMW MSD80/MSD81 (N54) engines. Standalone Direct CAN/UDS implementation with interactive CLI and PySide6 GUI.
 
-**Status:** Code Complete — Hardware Validation Pending  
-**Updated:** December 2025
+ECU diagnostics, tuning, and map flashing for BMW MSD80/MSD81 (N54) engines. Standalone Direct CAN/UDS implementation with interactive CLI and PySide6 GUI.
 
 ---
 
@@ -19,7 +79,7 @@ ECU diagnostics, tuning, and map flashing for BMW MSD80/MSD81 (N54) engines. Sta
 | **GUI Application** | PySide6 widgets: flash wizard, OBD dashboard, map editor, tuning options |
 | **Tune & Flash** | End-to-end workflow: configure → patch → CRC recalc → flash → verify |
 
-**Supported ECUs:** MSD80, MSD81 (N54 twin-turbo)
+**Supported ECUs:** MSD80 & I8A0S only!
 
 ---
 
@@ -49,9 +109,7 @@ python -m flash_tool.gui.app
 | K+DCAN USB | OBD-II diagnostics | DTCs, live data, adaptations |
 | 12V supply | Flash safety | Battery charger recommended |
 
-⚠️ **Bench ECU testing required before vehicle use**
 
----
 
 ## Package Overview
 
@@ -81,20 +139,31 @@ python -m flash_tool.gui.app
 | `coding_widget.py` | 424 | Module coding interface |
 | `map_editor_widget.py` | 246 | Table/grid map editing |
 
+
 ### Supporting Modules
 
-| Module | Purpose |
-|--------|---------|
-| `validated_maps.py` | Safe map registry + forbidden regions |
-| `boost_patcher.py` | Boost table modifications |
-| `backup_manager.py` | Backup lifecycle management |
-| `crc_validator.py` | Pre-flash CRC validation |
-| `crc_zones.py` | BMW CRC zone definitions |
-| `bmw_checksum.py` | CRC16/CRC32 algorithms |
-| `dtc_database.py` | DTC code definitions |
-| `security.py` | Seed/key algorithms |
-| `settings_manager.py` | Persistent configuration |
-| `operation_logger.py` | JSON operation logging |
+| Module                | Purpose                                      |
+|-----------------------|----------------------------------------------|
+| `validated_maps.py`   | XDF-validated map registry, forbidden regions|
+| `boost_patcher.py`    | Boost table patching and map logic           |
+| `backup_manager.py`   | Backup/restore orchestration, file mgmt      |
+| `crc_validator.py`    | CRC32/CRC16 validation, pre-flash checks     |
+| `crc_zones.py`        | BMW CRC zone definitions, region helpers     |
+| `bmw_checksum.py`     | BMW CRC16/CRC32 algorithms                   |
+| `dtc_database.py`     | DTC code definitions, lookup                 |
+| `security.py`         | Seed/key algorithms, security access         |
+| `settings_manager.py` | Persistent config, user settings             |
+| `operation_logger.py` | JSON/text operation logging                  |
+| `map_validator.py`    | Map data validation, structure checks        |
+| `offset_database.py`  | Offset registry, address helpers             |
+| `software_detector.py`| Platform/adapter detection                   |
+| `connection_manager.py`| Port selection, connection state            |
+| `com_scanner.py`      | Serial port and CAN adapter scanning         |
+| `bmw_modules.py`      | BMW module registry, addressing              |
+| `obd_session_manager.py`| OBD session state, protocol helpers        |
+| `map_manager.py`      | Map file management, patching, metadata      |
+| `flash_safety.py`     | Flash safety logic, error classes            |
+| `operation_logger.py` | Operation logging, audit trail               |
 
 ---
 
@@ -108,22 +177,6 @@ python -m flash_tool.gui.app
 5. All-zero detection
 6. All-0xFF detection
 7. Warning accumulation
-
-### Validated Maps (6)
-| Type | Offsets |
-|------|---------|
-| Ignition Timing | `0x057B58`, `0x05D288`, `0x060EC0` |
-| WGDC | `0x051580`, `0x051DA0`, `0x0546D0` |
-
-### Forbidden Regions
-| Range | Risk |
-|-------|------|
-| `0x054A90–0x054B50` | WGDC checksum — **BRICK** |
-| `0x05AD20–0x05AD80` | WGDC checksum — **BRICK** |
-| `0x000000–0x007FFF` | Boot code |
-| `0x1F0000–0x200000` | Flash counter |
-
----
 
 ## Tuning Options
 
@@ -168,39 +221,135 @@ Main Menu → 7. Map Options & Tuning
   → 11. Tune & Flash
 ```
 
----
 
-## Testing Status
-
-| Phase | Status | Notes |
-|-------|--------|-------|
-| Syntax validation | ✅ | All 70 modules compile |
-| Import testing | ✅ | All dependencies resolve |
-| Mock mode | ✅ | Simulated flash verified |
-| Seed/key algorithms | ✅ | Test vectors pass |
-| Hardware testing | ⏳ | Requires PCAN + bench ECU |
-| Vehicle testing | ⏳ | After bench validation |
-
----
 
 ## Project Structure
 
 ```
 flash_tool/
-├── cli.py                    # Main CLI entry point
-├── direct_can_flasher.py     # CAN/UDS protocol stack
-├── map_flasher.py            # Flash orchestration
-├── map_patcher.py            # Binary patching
-├── validated_maps.py         # Safe map registry
-├── n54_pids.py               # N54 parameters
-├── obd_reader.py             # OBD-II handler
-├── dme_handler.py            # BMW DME functions
+├── accel_logger.py
+├── adapters/
+│   ├── __init__.py
+│   └── pcan_adapter.py
+├── backup_manager.py
+├── bench_tools.py
+├── bin_analyzer.py
+├── bmw_checksum.py
+├── bmw_modules.py
+├── bmw_protocol.py
+├── boost_patcher.py
+├── can_adapter.py
+├── cli.py
+├── com_scanner.py
+├── connection_manager.py
+├── crc_validator.py
+├── crc_zones.py
+├── data_logger.py
+├── direct_can_flasher.py
+├── dme_handler.py
+├── dtc_database.py
+├── dtc_utils.py
+├── flash_safety.py
 ├── gui/
-│   ├── app.py                # GUI application
-│   ├── gui_api.py            # Backend bridge
-│   └── widgets/              # 17 UI widgets
-└── adapters/
-    └── pcan_adapter.py       # PCAN interface
+│   ├── __init__.py
+│   ├── app.py
+│   ├── gui_api.py
+│   ├── gui_api_stub.py
+│   ├── map_model.py
+│   ├── patch_manifest.py
+│   ├── theme.qss
+│   ├── utils.py
+│   ├── worker.py
+│   └── widgets/
+│       ├── backup_recovery.py
+│       ├── bin_compare.py
+│       ├── bin_inspector.py
+│       ├── coding_widget.py
+│       ├── connection_widget.py
+│       ├── direct_can_widget.py
+│       ├── flasher_wizard.py
+│       ├── gauges_dashboard.py
+│       ├── help_about_dialog.py
+│       ├── live_control_widget.py
+│       ├── live_plot_widget.py
+│       ├── log_viewer.py
+│       ├── map_editor.py
+│       ├── map_editor_widget.py
+│       ├── map_preview.py
+│       ├── obd_dashboard.py
+│       ├── obd_logger.py
+│       ├── settings_dialog.py
+│       ├── tuning_editor.py
+│       ├── tuning_options.py
+│       └── validated_maps_viewer.py
+├── help_system.py
+├── img/
+│   ├── About.png
+│   ├── AppIcon.png
+│   ├── Backup.png
+│   ├── CheckboxOff.png
+│   ├── CheckboxOn.png
+│   ├── Chip.png
+│   ├── Connect.png
+│   ├── Connection.png
+│   ├── Diagnostics.png
+│   ├── Differences.png
+│   ├── Disconnect.png
+│   ├── DTCClear.png
+│   ├── DTCRead.png
+│   ├── ECUInfo.png
+│   ├── Flash.png
+│   ├── FlashTab.png
+│   ├── Folder.png
+│   ├── InfoSmall.png
+│   ├── LiveData.png
+│   ├── LiveStart.png
+│   ├── LiveStop.png
+│   ├── LoadBin.png
+│   ├── Log.png
+│   ├── Logo.png
+│   ├── Logs.png
+│   ├── MapsTuning.png
+│   ├── Patch.png
+│   ├── RadioOff.png
+│   ├── RadioOn.png
+│   ├── Redo.png
+│   ├── Restore.png
+│   ├── Save.png
+│   ├── Scan.png
+│   ├── Settings.png
+│   ├── Splash.png
+│   ├── TableEditor.png
+│   ├── Undo.png
+│   ├── ValidateBin.png
+│   ├── Verify.png
+│   └── Warning.png
+├── kwp_client.py
+├── logger_integration.py
+├── map_flasher.py
+├── map_manager.py
+├── map_offsets.py
+├── map_options.py
+├── map_patcher.py
+├── map_validator.py
+├── module_scanner.py
+├── n54_pids.py
+├── obd_reader.py
+├── obd_session_manager.py
+├── offset_database.py
+├── operation_logger.py
+├── README.md
+├── security.py
+├── settings_manager.py
+├── software_detector.py
+├── stock_values.py
+├── tuning_parameters.py
+├── udsoncan_adapter.py
+├── uds_client.py
+├── uds_handler.py
+├── uds_isotp_client.py
+├── validated_maps.py
+├── __init__.py
 ```
 
 ---
@@ -212,11 +361,3 @@ flash_tool/
 - PySide6 (GUI)
 - PCAN-USB adapter (flash operations)
 - K+DCAN cable (OBD diagnostics)
-
----
-
-## License
-
-Research and educational use only. Use at your own risk.
-
-⚠️ **Do not flash vehicle ECU without bench validation.**
