@@ -1,0 +1,172 @@
+/* Neon dark theme for Free N54 Flasher */
+
+/* COLOR PALETTE
+   DeepBlack     #0A0A0F
+   PanelDark     #12121A
+   WidgetDark    #181824
+   RaisedDark    #1F1F2B
+
+   PrimaryText   #C8D0FF
+   SecondaryText #8A92B5
+   DisabledText  #555A6E
+   WarningText   #FF5252
+   SuccessText   #32E67A
+
+   NeonBlue        #4CC3FF
+   NeonBlueBright  #66D8FF
+   NeonBlueGlow    rgba(76,195,255,0.45)
+
+   BorderSoft   #2A2A39
+   BorderStrong #3B3B50
+
+   DangerRed    #FF4444
+   DangerGlow   rgba(255,80,80,0.45)
+*/
+
+QMainWindow {
+    background: #0A0A0F;
+}
+
+QWidget {
+    color: #C8D0FF;
+    background-color: #12121A;
+}
+
+/* Tabs */
+QTabWidget::pane {
+    border: 1px solid #2A2A39;
+    background: #12121A;
+}
+
+QTabBar::tab {
+    background: #1A1A26;
+    color: #C8D0FF;
+    padding: 8px 14px;
+    margin-right: 2px;
+    border: 1px solid #2A2A39;
+}
+
+QTabBar::tab:selected {
+    background: #1F1F2B;
+    border-bottom: 2px solid #4CC3FF;
+    color: white;
+}
+
+/* Group boxes */
+QGroupBox {
+    color: #C8D0FF;
+    border: 1px solid #2A2A39;
+    border-radius: 6px;
+    margin-top: 16px;
+    padding-top: 10px;
+    background-color: #181824;
+}
+
+QGroupBox::title {
+    color: #66D8FF;
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 4px 8px;
+    left: 10px;
+    top: -8px;
+}
+
+/* Buttons */
+QPushButton {
+    background-color: #181824;
+    color: #C8D0FF;
+    border: 1px solid #2A2A39;
+    padding: 6px 10px;
+    border-radius: 6px;
+}
+
+QPushButton:hover {
+    border: 1px solid #4CC3FF;
+    color: white;
+}
+
+QPushButton:pressed {
+    background-color: #1F1F2B;
+    border: 1px solid #66D8FF;
+}
+
+QPushButton[danger="true"] {
+    background-color: #281010;
+    border: 1px solid #552222;
+    color: #FF6666;
+}
+
+QPushButton[danger="true"]:hover {
+    background-color: #381212;
+    border: 1px solid #FF4444;
+    color: white;
+}
+
+/* Text inputs */
+QLineEdit, QComboBox, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox {
+    background-color: #12121A;
+    color: #C8D0FF;
+    border: 1px solid #3B3B50;
+    border-radius: 4px;
+}
+
+QLineEdit:focus, QComboBox:focus, QTextEdit:focus, QPlainTextEdit:focus {
+    border: 1px solid #4CC3FF;
+}
+
+/* Checkboxes & radios use custom icons under img/ */
+QCheckBox::indicator {
+    width: 20px;
+    height: 20px;
+}
+
+QCheckBox::indicator:unchecked {
+    image: url("img/CheckboxOff.png");
+}
+
+QCheckBox::indicator:checked {
+    image: url("img/CheckboxOn.png");
+}
+
+QRadioButton::indicator {
+    width: 20px;
+    height: 20px;
+}
+
+QRadioButton::indicator:unchecked {
+    image: url("img/RadioOff.png");
+}
+
+QRadioButton::indicator:checked {
+    image: url("img/RadioOn.png");
+}
+
+/* Tables */
+QTableWidget, QTableView {
+    background-color: #12121A;
+    color: #C8D0FF;
+    gridline-color: #2A2A39;
+    selection-background-color: #4CC3FF;
+    selection-color: black;
+}
+
+QHeaderView::section {
+    background-color: #1A1A26;
+    color: #C8D0FF;
+    border: 1px solid #2A2A39;
+}
+
+/* Scrollbars */
+QScrollBar:vertical {
+    background: #0A0A0F;
+    width: 12px;
+}
+
+QScrollBar::handle:vertical {
+    background: #2A2A39;
+    border-radius: 5px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #4CC3FF;
+}
