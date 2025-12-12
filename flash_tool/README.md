@@ -183,19 +183,6 @@ Main Menu → 7. Map Options & Tuning
 
 ---
 
-## Documentation
-
-| Document | Description |
-|----------|-------------|
-| [docs/DOCUMENTATION_INDEX.md](../docs/DOCUMENTATION_INDEX.md) | Master index |
-| [docs/architecture.md](../docs/architecture.md) | System design |
-| [docs/FINAL_VALIDATED_DISCOVERIES.md](../docs/FINAL_VALIDATED_DISCOVERIES.md) | Safe maps & forbidden regions |
-| [docs/flash_safety_checklist.md](../docs/flash_safety_checklist.md) | Pre-flash safety |
-| [docs/direct_can_flash_guide.md](../docs/direct_can_flash_guide.md) | Flash procedure |
-| [docs/user_guide.md](../docs/user_guide.md) | End-user manual |
-
----
-
 ## Project Structure
 
 ```
