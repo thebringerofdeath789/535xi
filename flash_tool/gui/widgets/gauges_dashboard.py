@@ -187,35 +187,15 @@ class GaugesDashboard(QtWidgets.QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Gauge profile configuration: maps profile names to logical keys
-        # and visual scaling for each of the three analog gauges.
-        self._profiles = {
-            "Boost / RPM / Speed": {
-                'left': ('boost', "BOOST", "PSI", -15.0, 30.0, 20.0, 25.0),
-                'center': ('rpm', "RPM", "x1000", 0.0, 8.0, 6.5, 7.2),
-                'right': ('speed', "SPEED", "MPH", 0.0, 180.0, None, None),
-            },
-            "Safety (Coolant / Oil / Boost)": {
-                'left': ('coolant', "COOLANT", "°F", 120.0, 260.0, 230.0, 245.0),
-                'center': ('oil_temp', "OIL TEMP", "°F", 150.0, 280.0, 250.0, 265.0),
-                'right': ('boost', "BOOST", "PSI", -15.0, 30.0, 20.0, 25.0),
-            },
-            "Fuel & AFR (AFR / Fuel / RPM)": {
-                'left': ('afr', "AFR", "", 8.0, 20.0, None, None),
-                'center': ('fuel_pressure', "FUEL PRES", "PSI", 500.0, 3000.0, None, None),
-                'right': ('rpm', "RPM", "x1000", 0.0, 8.0, 6.5, 7.2),
-            },
-        }
-        self._current_profile: str = "Boost / RPM / Speed"
-        self._gauge_map: Dict[str, str] = {}
+        from flash_tool.n54_pids import get_common_dashboard_pids
+        self._all_pids = get_common_dashboard_pids()
+        self._pid_checkboxes = {}
+        self._gauges = {}
         self._setup_ui()
         self._demo_mode = False
         self._demo_timer = QTimer(self)
         self._demo_timer.timeout.connect(self._update_demo)
         self._demo_angle = 0
-
-        # Live OBD streaming support (shared with OBD Logger controller
-        # so we reuse the same session and safety logic).
         self._obd_timer = QTimer(self)
         self._obd_timer.timeout.connect(self._poll_obd)
         self._obd_controller: Optional[Any] = None
@@ -226,7 +206,7 @@ class GaugesDashboard(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
 
-        # Add help button (top right)
+        # Help button (top right)
         help_btn = QtWidgets.QPushButton('Help')
         help_btn.setToolTip('Show help and usage instructions for the Gauges Dashboard.')
         help_btn.setFixedWidth(60)
@@ -236,143 +216,73 @@ class GaugesDashboard(QtWidgets.QWidget):
         hlayout.addWidget(help_btn)
         layout.addLayout(hlayout)
 
-        # Title bar
-        title_bar = QtWidgets.QHBoxLayout()
+        # Title
         title = QtWidgets.QLabel("Live Vehicle Dashboard")
         title.setStyleSheet("font-size: 18px; font-weight: bold; color: white;")
         title.setToolTip("Displays real-time vehicle data using analog and digital gauges.")
-        title_bar.addWidget(title)
-        # Gauge profile selector
-        title_bar.addStretch()
-        self.profile_combo = QtWidgets.QComboBox()
-        for name in sorted(self._profiles.keys()):
-            self.profile_combo.addItem(name)
-        try:
-            idx = self.profile_combo.findText(self._current_profile)
-            if idx >= 0:
-                self.profile_combo.setCurrentIndex(idx)
-        except Exception:
-            pass
-        self.profile_combo.setToolTip("Select which set of gauges to display (Boost/RPM/Speed, Safety, Fuel & AFR)")
-        self.profile_combo.currentTextChanged.connect(self._on_profile_changed)
-        title_bar.addWidget(QtWidgets.QLabel("Profile:"))
-        title_bar.addWidget(self.profile_combo)
+        layout.addWidget(title)
 
-        self.demo_btn = QtWidgets.QPushButton("▶ Demo Mode")
-        self.demo_btn.setCheckable(True)
-        self.demo_btn.setToolTip("Toggle simulated demo mode for gauges.")
-        self.demo_btn.toggled.connect(self._toggle_demo)
-        title_bar.addWidget(self.demo_btn)
+        # PID selection area (checkboxes in scroll area)
+        pid_scroll = QtWidgets.QScrollArea()
+        pid_scroll.setWidgetResizable(True)
+        pid_widget = QtWidgets.QWidget()
+        pid_layout = QtWidgets.QVBoxLayout(pid_widget)
+        for pid in self._all_pids:
+            cb = QtWidgets.QCheckBox(f"{pid.name} [{pid.unit}]")
+            cb.setToolTip(pid.description)
+            cb.stateChanged.connect(lambda state, p=pid: self._on_pid_checkbox(p, state))
+            self._pid_checkboxes[pid.pid] = cb
+            pid_layout.addWidget(cb)
+        pid_layout.addStretch()
+        pid_scroll.setWidget(pid_widget)
+        layout.addWidget(QtWidgets.QLabel("Select PIDs to display as gauges:"))
+        layout.addWidget(pid_scroll, stretch=0)
 
-        self.connect_btn = QtWidgets.QPushButton("Connect OBD")
-        self.connect_btn.setToolTip("Connect to the vehicle's OBD-II port and stream live data.")
-        self.connect_btn.clicked.connect(self._on_connect)
-        title_bar.addWidget(self.connect_btn)
+        # Gauges area (scrollable)
+        self.gauge_scroll = QtWidgets.QScrollArea()
+        self.gauge_scroll.setWidgetResizable(True)
+        self.gauge_area = QtWidgets.QWidget()
+        self.gauge_layout = QtWidgets.QVBoxLayout(self.gauge_area)
+        self.gauge_layout.addStretch()
+        self.gauge_scroll.setWidget(self.gauge_area)
+        layout.addWidget(self.gauge_scroll, stretch=1)
 
-        layout.addLayout(title_bar)
-        
-        # Main gauges area
-        gauges_layout = QtWidgets.QHBoxLayout()
-        
-        # Left side - Boost gauge (large)
-        boost_frame = QtWidgets.QFrame()
-        boost_frame.setStyleSheet("background: #1e1e1e; border-radius: 10px;")
-        boost_layout = QtWidgets.QVBoxLayout(boost_frame)
-        
-        self.boost_gauge = AnalogGauge(
-            title="BOOST", unit="PSI",
-            min_val=-15, max_val=30,
-            warning_val=20, danger_val=25
-        )
-        self.boost_gauge.setMinimumSize(220, 220)
-        self.boost_gauge.setToolTip("Shows current boost/vacuum pressure in PSI.")
-        boost_layout.addWidget(self.boost_gauge)
-        gauges_layout.addWidget(boost_frame)
-        
-        # Center - RPM gauge (large)
-        rpm_frame = QtWidgets.QFrame()
-        rpm_frame.setStyleSheet("background: #1e1e1e; border-radius: 10px;")
-        rpm_layout = QtWidgets.QVBoxLayout(rpm_frame)
-        
-        self.rpm_gauge = AnalogGauge(
-            title="RPM", unit="x1000",
-            min_val=0, max_val=8,
-            warning_val=6.5, danger_val=7.2
-        )
-        self.rpm_gauge.setMinimumSize(220, 220)
-        self.rpm_gauge.setToolTip("Shows engine speed in thousands of RPM.")
-        rpm_layout.addWidget(self.rpm_gauge)
-        gauges_layout.addWidget(rpm_frame)
-        
-        # Right side - Speed gauge
-        speed_frame = QtWidgets.QFrame()
-        speed_frame.setStyleSheet("background: #1e1e1e; border-radius: 10px;")
-        speed_layout = QtWidgets.QVBoxLayout(speed_frame)
-        
-        self.speed_gauge = AnalogGauge(
-            title="SPEED", unit="MPH",
-            min_val=0, max_val=180,
-            warning_val=None, danger_val=None
-        )
-        self.speed_gauge.setMinimumSize(220, 220)
-        self.speed_gauge.setToolTip("Shows vehicle speed in miles per hour.")
-        speed_layout.addWidget(self.speed_gauge)
-        gauges_layout.addWidget(speed_frame)
-        
-        layout.addLayout(gauges_layout)
-        
-        # Digital readouts row
-        digital_layout = QtWidgets.QHBoxLayout()
-        
-        self.iat_readout = DigitalReadout("IAT", "°F", 0)
-        self.iat_readout.setToolTip("Intake Air Temperature in Fahrenheit.")
-        digital_layout.addWidget(self.iat_readout)
-
-        self.coolant_readout = DigitalReadout("COOLANT", "°F", 0)
-        self.coolant_readout.setToolTip("Engine coolant temperature in Fahrenheit.")
-        digital_layout.addWidget(self.coolant_readout)
-
-        self.oil_readout = DigitalReadout("OIL TEMP", "°F", 0)
-        self.oil_readout.setToolTip("Engine oil temperature in Fahrenheit.")
-        digital_layout.addWidget(self.oil_readout)
-
-        self.afr_readout = DigitalReadout("AFR", "", 2)
-        self.afr_readout.setToolTip("Air-fuel ratio (lambda) value.")
-        digital_layout.addWidget(self.afr_readout)
-
-        self.timing_readout = DigitalReadout("TIMING", "°", 1)
-        self.timing_readout.setToolTip("Ignition timing advance in degrees.")
-        digital_layout.addWidget(self.timing_readout)
-
-        self.fuel_readout = DigitalReadout("FUEL PRES", "PSI", 0)
-        self.fuel_readout.setToolTip("Fuel rail pressure in PSI.")
-        digital_layout.addWidget(self.fuel_readout)
-        
-        layout.addLayout(digital_layout)
-        
         # Status bar
         self.status_label = QtWidgets.QLabel("Disconnected - Click 'Connect OBD' or enable Demo Mode")
         self.status_label.setStyleSheet("color: #888; padding: 5px;")
         self.status_label.setToolTip("Shows the current connection status and error messages.")
         layout.addWidget(self.status_label)
-            def _show_help_dialog(self):
-                msg = QtWidgets.QMessageBox(self)
-                msg.setWindowTitle('Gauges Dashboard Help')
-                msg.setIcon(QtWidgets.QMessageBox.Icon.Information)
-                msg.setText(
-                    '<b>Gauges Dashboard Help</b><br><br>'
-                    '<b>Purpose:</b> Display real-time vehicle data using analog and digital gauges.<br>'
-                    '<ul>'
-                    '<li><b>Profile:</b> Select which set of gauges to display (Boost/RPM/Speed, Safety, Fuel & AFR).</li>'
-                    '<li><b>Demo Mode:</b> Simulate live data for demonstration and testing.</li>'
-                    '<li><b>Connect OBD:</b> Connect to the vehicle and stream live data to the gauges.</li>'
-                    '<li><b>Status Bar:</b> Shows connection state and error messages.</li>'
-                    '<li><b>Tooltips:</b> Hover over any gauge or control for more information.</li>'
-                    '</ul>'
-                    '<b>Tips:</b> Use the help button for guidance at any time.'
-                )
-                msg.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
-                msg.exec()
+
+    def _on_pid_checkbox(self, pid, state):
+        if state:
+            if pid.pid not in self._gauges:
+                gauge = AnalogGauge(title=pid.name, unit=pid.unit, min_val=pid.min_value or 0, max_val=pid.max_value or 100)
+                self._gauges[pid.pid] = gauge
+                self.gauge_layout.insertWidget(self.gauge_layout.count() - 1, gauge)
+        else:
+            if pid.pid in self._gauges:
+                gauge = self._gauges.pop(pid.pid)
+                gauge.setParent(None)
+                gauge.deleteLater()
+
+    def _show_help_dialog(self):
+        msg = QtWidgets.QMessageBox(self)
+        msg.setWindowTitle('Gauges Dashboard Help')
+        msg.setIcon(QtWidgets.QMessageBox.Icon.Information)
+        msg.setText(
+            '<b>Gauges Dashboard Help</b><br><br>'
+            '<b>Purpose:</b> Display real-time vehicle data using analog and digital gauges.<br>'
+            '<ul>'
+            '<li><b>Profile:</b> Select which set of gauges to display (Boost/RPM/Speed, Safety, Fuel & AFR).</li>'
+            '<li><b>Demo Mode:</b> Simulate live data for demonstration and testing.</li>'
+            '<li><b>Connect OBD:</b> Connect to the vehicle and stream live data to the gauges.</li>'
+            '<li><b>Status Bar:</b> Shows connection state and error messages.</li>'
+            '<li><b>Tooltips:</b> Hover over any gauge or control for more information.</li>'
+            '</ul>'
+            '<b>Tips:</b> Use the help button for guidance at any time.'
+        )
+        msg.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
+        msg.exec()
         
         # Set dark background
         self.setStyleSheet("background: #121212;")

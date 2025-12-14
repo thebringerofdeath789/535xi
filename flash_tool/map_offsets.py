@@ -5,15 +5,14 @@ BMW Map Offsets - XDF Validated Memory Addresses
 
 Author: Gregory King
 Date: November 3, 2025
-Updated: Based on Corbanistan XDF (I8A0S_Custom_Corbanistan.xdf)
+Updated: For I8A0S OS, based on Corbanistan XDF (I8A0S_Custom_Corbanistan.xdf). For non-I8A0S OS variants (IJE0S, IKM0S, INA0S, etc.), authoritative offsets are derived from the Zarboz XDF family (IJE0S_zarboz.xdf, IKM0S_zarboz.xdf, INA0S_zarboz.xdf).
 License: GNU General Public License v3.0 (GPL-3.0)
 
 Description:
     Central registry of ECU memory offsets for various tuning parameters.
-    VALIDATED against Corbanistan XDF file - the authoritative source.
+    VALIDATED against the authoritative XDF for the OS family (Corbanistan for I8A0S; Zarboz variants for non-I8A0S).
     
-    CRITICAL: These offsets are for I8A0S MSD81 (2MB flash) ONLY.
-    Other ECU variants (IJE0S, IKM0S, etc.) may have different offsets.
+    CRITICAL: Many offsets in this file target I8A0S MSD81 (2MB flash) and are NOT valid for other ECU variants. Always consult the appropriate OS-specific XDF for offsets and sizes.
 
 XDF Validation Source:
     maps/xdf_definitions/github/I8A0S_Custom_Corbanistan.xdf

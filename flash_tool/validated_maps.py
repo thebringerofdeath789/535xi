@@ -6,10 +6,11 @@ available and exposes a backward-compatible surface that other modules
 and tests expect (names like `VALIDATED_MAPS`, `REJECTED_MAPS`, and
 functions such as `to_absolute_offset`, `is_offset_safe`, etc.).
 
-IMPORTANT: Only maps verified against the Corbanistan XDF are included.
-Previous binary-diff derived offsets were REMOVED as they are not in the XDF.
+IMPORTANT: Maps in this registry are verified against the authoritative XDF for the OS family:
+- For I8A0S OS, the Corbanistan XDF is authoritative (I8A0S_Custom_Corbanistan.xdf / I8A0S_Corbanistan.xdf).
+- For non-I8A0S OS variants (IJE0S, IKM0S, INA0S, etc.), use the Zarboz XDF variants (IJE0S_zarboz.xdf, IKM0S_zarboz.xdf, INA0S_zarboz.xdf).
 
-XDF Source: maps/xdf_definitions/github/I8A0S_Custom_Corbanistan.xdf
+Previous binary-diff derived offsets were removed where they are not present in the authoritative XDF for the given OS.
 """
 from __future__ import annotations
 

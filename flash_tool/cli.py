@@ -61,71 +61,59 @@ from . import settings_manager
 from . import operation_logger
 from . import help_system
 from . import uds_handler
-from . import tuning_parameters as map_options
+from . import tuning_parameters
 from . import validated_maps
 from . import map_patcher
 from . import software_detector
 from .direct_can_flasher import DirectCANFlasher
-from . import dme_handler
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('logs/flash_tool.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
-# Runtime holder for accel logger instance (created by CLI when used)
-_accel_logger = None
-_data_logger = None
-
-
-## Note: dynamic dicts from managers are typed at use sites for clarity
-
-
-def main_menu():
-    """Displays the main menu and handles user input."""
-    # Try to load saved port preference on startup
-    conn_mgr = connection_manager.get_manager()
-    saved_port = conn_mgr.load_saved_port(auto_activate=False)
-    
-    if saved_port:
-        print(f"\nFound saved port preference: {saved_port}")
-        if input("Use this port? (Y/n): ").strip().upper() != 'N':
-            if conn_mgr.set_active_port(saved_port):
-                print(f"Active port set to: {saved_port}")
+def map_options_menu():
+    """Tuning Presets submenu - Configure tuning options before flash (canonical)."""
+    current_preset_name = "stock"
+    current_preset = tuning_parameters.get_preset(current_preset_name)
     
     while True:
         click.echo("\n" + "="*60)
-        click.echo("=== BMW N54 Flash Tool - Main Menu ===")
+        click.echo("=== Tuning Presets & Options ===")
         click.echo("="*60)
-        
-        # Show current connection status
-        conn_info = conn_mgr.get_connection_info()
-        if conn_info.get('connected'):
-            status_symbol = "OK" if conn_info.get('accessible', False) else "FAIL"
-            click.echo(f"Current Connection: {status_symbol} {conn_info.get('port', 'None')}")
+        click.echo(f"\nCurrent preset: {current_preset_name}")
+        click.echo("\n1. Load Preset Configuration")
+        click.echo("2. View Preset Details")
+        click.echo("3. Validate Preset")
+        click.echo("4. Tune & Flash (Apply → Flash to ECU)")
+        click.echo("0. Back to Main Menu")
+        choice = click.prompt("\nSelect option", type=int, default=0)
+        if choice == 0:
+            break
+        elif choice == 1:
+            presets = tuning_parameters.list_presets()
+            click.echo("\nAvailable presets:")
+            for i, p in enumerate(presets, 1):
+                click.echo(f"  {i}. {p}")
+            idx = click.prompt("Select preset", type=int, default=1)
+            if 1 <= idx <= len(presets):
+                current_preset_name = presets[idx-1]
+                current_preset = tuning_parameters.get_preset(current_preset_name)
+                click.echo(f"Loaded preset: {current_preset_name}")
+            else:
+                click.echo("Invalid selection.")
+        elif choice == 2:
+            click.echo(f"\nPreset: {current_preset_name}")
+            click.echo(f"Description: {getattr(current_preset, 'description', '')}")
+            click.echo(f"Values: {getattr(current_preset, 'values', {})}")
+        elif choice == 3:
+            # Preset validation (if implemented)
+            if hasattr(current_preset, 'validate'):
+                valid, errors = current_preset.validate()
+                if valid:
+                    click.echo("Preset is valid.")
+                else:
+                    click.echo(f"Preset validation errors: {errors}")
+            else:
+                click.echo("Validation not implemented for this preset.")
+        elif choice == 4:
+            tune_and_flash(current_preset)
         else:
-            click.echo("Current Connection: None")
-        
-        click.echo("\n1. Hardware & Connection")
-        click.echo("2. Diagnostics (OBD-II)")
-        click.echo("3. Diagnostics (BMW DME/Modules)")
-        click.echo("4. Backup & Recovery")
-        click.echo("5. Flash Operations")
-        click.echo("6. UDS Operations (Advanced)")
-        click.echo("7. Map Options & Tuning")
-        click.echo("8. Validated Maps (NEW!)")
-        click.echo("9. Settings & Configuration")
-        click.echo("10. View Logs")
-        click.echo("11. Help & About")
-        click.echo("12. Direct CAN Flash (EXPERIMENTAL)")
-        click.echo("13. Advanced Features (Burbles, Launch, Anti-Lag)")
-        click.echo("14. Exit")
+            click.echo("Invalid option. Please select 0-4.")
         
         # In non-interactive environments (e.g., tests), exit after rendering once
         if not sys.stdin.isatty():
@@ -4322,65 +4310,30 @@ def apply_options_to_map(options: map_options.MapOptions):
     input("\nPress Enter to continue...")
 
 
-def tune_and_flash(options: map_options.MapOptions):
+def tune_and_flash(preset):
     """
-    Tune & Flash workflow: Apply MapOptions to a backup .bin, then flash to ECU.
-    
-    This orchestrates the full pipeline:
-    1. Validate MapOptions configuration
-    2. Select source .bin (backup or other)
-    3. Apply tuning patches + boost (if enabled) via MapPatcher
-    4. Recalculate CRCs and save tuned .bin
-    5. Run pre-flash safety checks (VIN, SW-ID, battery, backup verification)
-    6. Flash to ECU via map_flasher with full safety pipeline
+    Tune & Flash workflow: Apply a TuningPreset to a backup .bin, then flash to ECU.
     """
     from . import map_patcher
-    
     click.echo("\n" + "="*70)
-    click.echo("=== Tune & Flash (MapOptions → Tuned .bin → ECU) ===")
+    click.echo("=== Tune & Flash (Preset → Tuned .bin → ECU) ===")
     click.echo("="*70)
-    
     click.echo("\n This workflow will:")
-    click.echo("  1. Validate your tuning configuration")
-    click.echo("  2. Apply patches (incl. boost via boost_patcher) to a .bin file")
-    click.echo("  3. Recalculate BMW CRCs")
-    click.echo("  4. Run pre-flash safety checks (VIN, SW-ID, battery, backup)")
-    click.echo("  5. Flash the tuned calibration to ECU via Direct CAN/UDS")
-    
+    click.echo("  1. Apply preset patches to a .bin file")
+    click.echo("  2. Recalculate BMW CRCs")
+    click.echo("  3. Run pre-flash safety checks (VIN, SW-ID, battery, backup)")
+    click.echo("  4. Flash the tuned calibration to ECU via Direct CAN/UDS")
     click.echo("\n  DANGER: This will write to ECU memory!")
     click.echo("    Ensure stable 12V+ power and do NOT disconnect during flash.")
-    
     if not click.confirm("\nProceed with Tune & Flash?", default=False):
         click.echo("Cancelled.")
         input("\nPress Enter to continue...")
         return
-    
-    # 1. Validate options
-    is_valid, errors = options.validate()
-    if not is_valid:
-        click.echo("\n Configuration has errors:")
-        for error in errors:
-            click.echo(f"  - {error}")
-        input("\nPress Enter to continue...")
-        return
-    
-    enabled = options.get_enabled_options()
-    if not enabled:
-        click.echo("\n No tuning options are enabled. Enable at least one option first.")
-        input("\nPress Enter to continue...")
-        return
-    
-    click.echo("\n Configuration is valid")
-    click.echo("\nWill apply:")
-    for opt in enabled:
-        click.echo(f"   {opt}")
-    
-    # 2. Select source .bin file
+    # 1. Select source .bin file
     click.echo("\n" + "-"*50)
     click.echo("Select source .bin file:")
     click.echo("  1. Browse backups/ directory")
     click.echo("  2. Specify custom path")
-    
     source_choice = click.prompt("Select", type=int, default=1)
     
     if source_choice == 1:

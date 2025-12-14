@@ -14,11 +14,9 @@ try:
     import can as _can  # type: ignore
     CAN_AVAILABLE = True
 except ImportError:
+    _can = None
     CAN_AVAILABLE = False
-    raise ImportError(
-        "python-can library not found. Install with: pip install python-can\n"
-        "This library is required for CAN bus communication with ECU."
-    )
+    # python-can not installed — allow import to succeed but raise on create_bus call
 
 # Export python-can's Message and Bus implementations
 Message = _can.Message

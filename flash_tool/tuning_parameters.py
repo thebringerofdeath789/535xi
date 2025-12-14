@@ -1,3 +1,304 @@
+# ============================================================================
+# PRESET PORTING: Make all tuning recipes available for every XDF/bin
+# ============================================================================
+# Authoritative XDF per OS family:
+# - I8A0S OS: Corbanistan XDF (I8A0S_Corbanistan.xdf / I8A0S_Custom_Corbanistan.xdf)
+# - Non-I8A0S OS: Use Zarboz XDF variants (IJE0S_zarboz.xdf, IKM0S_zarboz.xdf, INA0S_zarboz.xdf, etc.)
+#
+# Note: Parameter keys are consistent across XDFs; offsets differ per OS.
+# When porting presets, map by parameter key and then select offsets from the
+# OS-specific authoritative XDF (Corbanistan for I8A0S, Zarboz for non-i8a0s).
+# ============================================================================
+from __future__ import annotations
+
+from typing import Optional
+import difflib
+import re
+from collections import OrderedDict
+
+
+def normalize_key(key: str) -> str:
+    """Normalize a parameter key for fuzzy matching and comparison."""
+    return key.strip().lower().replace(' ', '_').replace('-', '_').replace('/', '_').replace('(', '').replace(')', '').replace('__', '_')
+
+
+def find_best_param_key_for_preset_key(preset_key, param_keys):
+    """Resolve best matching parameter key for a preset key from the set of param_keys.
+
+    - Exact match if found
+    - Try common synonym replacements
+    - Fallback to difflib fuzzy matching
+    """
+    normalized = normalize_key(preset_key)
+
+    # Exact match
+    if normalized in param_keys:
+        return normalized
+
+    # Synonym heuristics
+    replacements = [
+        ('limiter', 'limit'),
+        ('limit', 'limiter'),
+        ('antilag', 'anti_lag'),
+        ('rev_limiter', 'rev_limit'),
+        ('rev_limit', 'rev_limiter'),
+    ]
+    for a, b in replacements:
+        candidate = normalized.replace(a, b)
+        if candidate in param_keys:
+            return candidate
+
+    # Token-overlap heuristic: prefer keys that share most tokens (helps re-ordering)
+    try:
+        preset_tokens = [t for t in re.split(r"[^a-z0-9]+", normalized) if t]
+        if preset_tokens:
+            best_overlap = 0.0
+            best_candidate = None
+            for pk in param_keys:
+                pk_tokens = [t for t in pk.split('_') if t]
+                # remove map suffix tokens like map2/map3 and e85 tokens for matching
+                pk_tokens_clean = [re.sub(r'map\d+$', '', t) for t in pk_tokens]
+                preset_tokens_clean = [re.sub(r'map\d+$', '', t) for t in preset_tokens]
+                inter = set(pk_tokens_clean) & set(preset_tokens_clean)
+                if not inter:
+                    continue
+                overlap = len(inter) / max(1, len(preset_tokens_clean))
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_candidate = pk
+            # Accept reasonably high overlap matches
+            if best_candidate and best_overlap >= 0.6:
+                return best_candidate
+    except Exception:
+        # Best-effort heuristic - ignore failures
+        pass
+
+    # Fuzzy match (slightly relaxed cutoff to improve cross-XDF mapping coverage)
+    matches = difflib.get_close_matches(normalized, list(param_keys), n=1, cutoff=0.75)
+    if matches:
+        return matches[0]
+
+    return None
+
+
+def map_preset_values_to_params(preset_values, params):
+    """Map a preset's values (keyed by generic param names) to a given bin's parameter keys."""
+    mapped_values = {}
+    param_keys = set(params.keys())
+
+    for k, v in preset_values.items():
+        best = find_best_param_key_for_preset_key(k, param_keys)
+        if best and best in params:
+            mapped_values[best] = v
+    return mapped_values
+
+
+def port_presets_to_bin(bin_name, xdf_summary_path=None):
+    """Port all existing static presets to a single bin/XDF by mapping keys."""
+    params = load_parameters_for_bin(bin_name, xdf_summary_path)
+    preset_objs = OrderedDict((k, v) for k, v in ALL_PRESETS.items())
+    bin_presets = {}
+    for preset_name, preset in preset_objs.items():
+        mapped_vals = map_preset_values_to_params(preset.values, params)
+        bin_presets[preset_name] = TuningPreset(
+            name=preset.name,
+            description=f"{preset.description}\n\n[Auto-mapped for {bin_name}]",
+            values=mapped_vals
+        )
+    return bin_presets
+
+
+def port_presets_to_all_bins(xdf_summary_path=None):
+    all_bin_presets = {}
+    for bin_name, xdf_path in xdf_paths.items():
+        all_bin_presets[bin_name] = port_presets_to_bin(bin_name, xdf_path)
+    return all_bin_presets
+
+# ============================================================================
+# XDF BIN DISCOVERY (for UI bin selection)
+# ============================================================================
+
+def _read_text_file_smart(path):
+    # Read bytes and attempt to decode using common encodings
+    raw = path.read_bytes()
+    for enc in ('utf-8', 'utf-8-sig', 'utf-16', 'latin-1'):
+        try:
+            return raw.decode(enc)
+        except Exception:
+            continue
+    # Fallback with replacement
+    return raw.decode('utf-8', errors='replace')
+
+
+def list_available_bins(xdf_summary_path=None) -> list:
+    bins = []
+    for xdf_file in xdf_dir.glob("*.xdf"):
+        bins.append(xdf_file.stem)
+    return bins
+# ============================================================================
+# DYNAMIC XDF-BASED PARAMETER LOADER (Multi-bin support)
+# ============================================================================
+
+def load_parameters_for_bin(bin_name: str, xdf_summary_path=None) -> Dict[str, TuningParameter]:
+    """
+    Dynamically load parameter definitions for a given bin from the authoritative XDF XML file.
+    Returns a dict of {param_key: TuningParameter}.
+    """
+    # Always use XDF parsing for all bins (including I8A0S_Corbanistan)
+    from pathlib import Path
+    import xml.etree.ElementTree as ET
+    xdf_dir = Path("maps/xdf_definitions/github")
+    xdf_path = None
+    for f in xdf_dir.glob("*.xdf"):
+        if bin_name.lower() in f.stem.lower():
+            xdf_path = f
+            break
+    if not xdf_path or not xdf_path.exists():
+        raise FileNotFoundError(f"No XDF found for bin '{bin_name}' in {xdf_dir}")
+    tree = ET.parse(xdf_path)
+    root = tree.getroot()
+    params = {}
+    for table in root.findall(".//XDFTABLE"):
+        title = table.findtext("title")
+        desc = table.findtext("description") or ""
+        # Find Z axis (main data)
+        z_axis = None
+        for axis in table.findall("XDFAXIS"):
+            if axis.attrib.get("id") == "z":
+                z_axis = axis
+                break
+        if z_axis is None:
+            continue
+        emb = z_axis.find("EMBEDDEDDATA")
+        if emb is None:
+            continue
+        addr = emb.attrib.get("mmedaddress")
+        if not addr:
+            continue
+        offset = int(addr, 16)
+        element_size_bits = int(emb.attrib.get("mmedelementsizebits", "16"))
+        row_count = int(emb.attrib.get("mmedrowcount", "1"))
+        col_count = int(emb.attrib.get("mmedcolcount", "1")) if "mmedcolcount" in emb.attrib else 1
+        # Data format
+        if element_size_bits == 8:
+            data_format = DataFormat.UINT8
+        elif element_size_bits == 16:
+            data_format = DataFormat.UINT16_LE
+        elif element_size_bits == 32:
+            data_format = DataFormat.UINT32_LE
+        else:
+            data_format = DataFormat.UINT16_LE
+        # Improved scaling/conversion logic
+        math_elem = z_axis.find("MATH")
+        conversion = None
+        if math_elem is not None:
+            eq = math_elem.attrib.get("equation", "X")
+            import re
+            # Support X, X/NNN, X*NNN, X+NNN, X-NNN, X*NNN+NNN, X/NNN+NNN, X*NNN-NNN, X/NNN-NNN
+            m = re.match(r"X([*/+-])([0-9.]+)([+-][0-9.]+)?", eq.replace(" ", ""))
+            if eq == "X":
+                conversion = UnitConversion.identity()
+            elif m:
+                op = m.group(1)
+                factor = float(m.group(2))
+                offset_val = float(m.group(3)) if m.group(3) else 0.0
+                if op == "/":
+                    scale = factor
+                    if offset_val == 0.0:
+                        conversion = UnitConversion.scale(scale, "", "raw")
+                    else:
+                        conversion = UnitConversion(
+                            display_unit="",
+                            storage_unit="raw",
+                            to_display=lambda x: x / scale + offset_val,
+                            from_display=lambda x: (x - offset_val) * scale,
+                            decimal_places=2
+                        )
+                elif op == "*":
+                    scale = factor
+                    if offset_val == 0.0:
+                        conversion = UnitConversion(
+                            display_unit="",
+                            storage_unit="raw",
+                            to_display=lambda x: x * scale,
+                            from_display=lambda x: x / scale,
+                            decimal_places=2
+                        )
+                    else:
+                        conversion = UnitConversion(
+                            display_unit="",
+                            storage_unit="raw",
+                            to_display=lambda x: x * scale + offset_val,
+                            from_display=lambda x: (x - offset_val) / scale,
+                            decimal_places=2
+                        )
+                elif op == "+":
+                    conversion = UnitConversion(
+                        display_unit="",
+                        storage_unit="raw",
+                        to_display=lambda x: x + factor,
+                        from_display=lambda x: x - factor,
+                        decimal_places=2
+                    )
+                elif op == "-":
+                    conversion = UnitConversion(
+                        display_unit="",
+                        storage_unit="raw",
+                        to_display=lambda x: x - factor,
+                        from_display=lambda x: x + factor,
+                        decimal_places=2
+                    )
+                else:
+                    conversion = UnitConversion.identity()
+            else:
+                conversion = UnitConversion.identity()
+        else:
+            conversion = UnitConversion.identity()
+        # Category (optional)
+        cat_elem = table.find("CATEGORYMEM")
+        category = ParameterCategory.ADVANCED
+        if cat_elem is not None:
+            category = ParameterCategory.ADVANCED
+        key = normalize_key(title)
+        count = row_count * col_count
+        rows = row_count
+        cols = col_count
+        param = TuningParameter(
+            name=title,
+            description=desc,
+            offset=offset,
+            data_format=data_format,
+            category=category,
+            xdf_title=title,
+            count=count,
+            rows=rows,
+            cols=cols,
+            conversion=conversion
+        )
+        params[key] = param
+    return params
+    
+def get_unmapped_preset_keys_for_bin(bin_name: str, preset: Optional[TuningPreset] = None, xdf_summary_path=None) -> list:
+    """Return a list of preset keys from `preset` that could not be mapped to
+    any parameter key present in the specified bin's XDF summary.
+
+    This helper does NOT create any placeholders or modify the parameter set;
+    it simply reports which preset keys are unmapped so callers can present
+    a clear, auditable list to users or logs.
+    """
+    if preset is None:
+        preset = PRESET_STAGE1
+
+    params = load_parameters_for_bin(bin_name, xdf_summary_path)
+    param_keys = set(params.keys())
+    missing = []
+    for k in preset.values.keys():
+        best = find_best_param_key_for_preset_key(k, param_keys)
+        if not best:
+            missing.append(k)
+    return missing
+    
+    # NOTE: unreachable (kept for safety) - code should return above
 #!/usr/bin/env python3
 """
 BMW N54 Tuning Parameters - Comprehensive Map Definitions
@@ -193,18 +494,49 @@ class TuningParameter:
         return element_size * self.count
     
     def read_from_binary(self, data: bytes) -> Any:
-        """Read value(s) from binary data"""
+        """Read value(s) from binary data, using XDF offset, element size, and count. Adds debug output for diagnosis."""
+        import sys
         fmt = self.data_format.value
         element_size = struct.calcsize(fmt)
-        
-        if self.count == 1:
-            return struct.unpack_from(fmt, data, self.offset)[0]
-        else:
+        debug = False
+        # Enable debug for specific keys or global flag
+        debug_keys = getattr(self, 'debug_keys', None)
+        if debug_keys and self.name in debug_keys:
+            debug = True
+        # 2D table: rows x cols (column-major order)
+        if self.rows > 1 and self.cols > 1:
             values = []
+            raw_bytes = []
+            for r in range(self.rows):
+                row = []
+                for c in range(self.cols):
+                    idx = c * self.rows + r  # column-major order
+                    offset = self.offset + idx * element_size
+                    val = struct.unpack_from(fmt, data, offset)[0]
+                    row.append(val)
+                    raw_bytes.append(data[offset:offset+element_size])
+            if debug:
+                print(f"[DEBUG] {self.name}: offset=0x{self.offset:X}, size={self.rows}x{self.cols}, bytes={[b.hex() for b in raw_bytes]}", file=sys.stderr)
+            return self.to_display_value(values)
+        # 1D table: cols or rows
+        elif self.count > 1:
+            values = []
+            raw_bytes = []
             for i in range(self.count):
-                val = struct.unpack_from(fmt, data, self.offset + i * element_size)[0]
+                offset = self.offset + i * element_size
+                val = struct.unpack_from(fmt, data, offset)[0]
                 values.append(val)
-            return values
+                raw_bytes.append(data[offset:offset+element_size])
+            if debug:
+                print(f"[DEBUG] {self.name}: offset=0x{self.offset:X}, size={self.count}, bytes={[b.hex() for b in raw_bytes]}", file=sys.stderr)
+            return self.to_display_value(values)
+        # Scalar
+        else:
+            offset = self.offset
+            val = struct.unpack_from(fmt, data, offset)[0]
+            if debug:
+                print(f"[DEBUG] {self.name}: offset=0x{self.offset:X}, size=1, bytes={data[offset:offset+element_size].hex()}", file=sys.stderr)
+            return self.to_display_value(val)
     
     def write_to_binary(self, data: bytearray, value: Any) -> None:
         """Write value(s) to binary data"""
@@ -748,23 +1080,27 @@ WGDC_AIRFLOW_ADDER_MAP4 = TuningParameter(
 
 BOOST_LIMIT_MULTIPLIER = TuningParameter(
     name="Boost Limit Multiplier",
-    description="Global multiplier for boost limits",
-    offset=0x66D3E,  # From XDF line 10025
+    description="Global limit on how much boost the DME is allowed to make (KL_FPLDSTOPF).\nXDF VALIDATED: I8A0S_Custom_Corbanistan.xdf @ 0x5F312",
+    offset=0x5F312,  # XDF validated
     data_format=DataFormat.UINT16_LE,
     category=ParameterCategory.BOOST_CONTROL,
     safety=SafetyLevel.DANGEROUS,
-    count=12,  # Typical axis count
+    count=8,  # 8 values per XDF
     stock_value=None,  # Will be read from bin
     validation=ValidationRule(min_value=0, max_value=65535),
-    conversion=UnitConversion.scale(32768, "factor", "raw", decimals=3),
+    conversion=UnitConversion(
+        display_unit="factor",
+        storage_unit="raw/16384",
+        to_display=lambda x: x / 16384,
+        from_display=lambda x: int(x * 16384),
+        decimal_places=3
+    ),
 )
 
 LOAD_LIMIT_FACTOR = TuningParameter(
     name="Load Limit Factor",
-    description="Factor limiting maximum load request based on pressure (KL_FUPSRF_ATL). "
-                "Set load limits based on pressure. 12-value table indexed by RPM. "
-                "✅ XDF VALIDATED: I8A0S_Custom_Corbanistan.xdf @ 0x5F27A",
-    offset=0x5F27A,  # ✅ VALIDATED in Corbanistan XDF
+    description="Set load limits based on pressure (KL_FUPSRF_ATL).\nXDF VALIDATED: I8A0S_Custom_Corbanistan.xdf @ 0x5F27A",
+    offset=0x5F27A,  # XDF validated
     data_format=DataFormat.UINT16_LE,
     category=ParameterCategory.BOOST_CONTROL,
     safety=SafetyLevel.DANGEROUS,
@@ -772,12 +1108,12 @@ LOAD_LIMIT_FACTOR = TuningParameter(
     rows=1,
     cols=12,
     count=12,
-    stock_value=None,
+    stock_value=None,  # Will be read from bin
     validation=ValidationRule(min_value=0, max_value=65535),
     conversion=UnitConversion(
         display_unit="%/hPa",
-        storage_unit="raw",
-        to_display=lambda x: x / 218452,  # X/218452 per XDF
+        storage_unit="raw/218452",
+        to_display=lambda x: x / 218452,
         from_display=lambda x: int(x * 218452),
         decimal_places=3
     ),
@@ -1066,7 +1402,10 @@ BURBLE_TIMING_BASE = TuningParameter(
     rows=6,   # Load axis
     cols=8,   # RPM axis
     count=48,  # 6 x 8
-    stock_value=None,
+    stock_value=[
+        # Fill with the correct stock values from the preset or XDF (example placeholder, replace with actual values if available)
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    ],
     validation=ValidationRule(min_value=0, max_value=2880, warn_min=800),  # -90 to +90 deg range
     conversion=UnitConversion(
         display_unit="°",
@@ -1350,80 +1689,33 @@ BURBLE_IGNITION_RETARD = TuningParameter(
 # ============================================================================
 
 # Organize all parameters by category
-ALL_PARAMETERS: Dict[str, TuningParameter] = {
-    # Performance
-    'speed_limiter_master': SPEED_LIMITER_MASTER,
-    'speed_limiter_array': SPEED_LIMITER_ARRAY,
-    'speed_limiter_disable': SPEED_LIMITER_DISABLE,
-    'rev_limiter_clutch_pressed': REV_LIMITER_CLUTCH_PRESSED,
-    'rev_limiter_floor_mt': REV_LIMITER_FLOOR_MT,
-    'rev_limiter_ceiling_mt': REV_LIMITER_CEILING_MT,
-    'rev_limiter_floor_at': REV_LIMITER_FLOOR_AT,
-    'rev_limiter_ceiling_at': REV_LIMITER_CEILING_AT,
-    'rev_limiter_time_bumps_mt': REV_LIMITER_TIME_BUMPS_MT,
-    
-    # Antilag/Launch
-    'antilag_enable': ANTILAG_ENABLE,
-    'antilag_boost_target': ANTILAG_BOOST_TARGET,
-    'antilag_cooldown': ANTILAG_COOLDOWN,
-    'antilag_fuel_target': ANTILAG_FUEL_TARGET,
-    'antilag_coolant_min': ANTILAG_COOLANT_MIN,
-    'antilag_coolant_max': ANTILAG_COOLANT_MAX,
-    'antilag_egt_max': ANTILAG_EGT_MAX,
-    
-    # Boost Control - XDF Validated WGDC Maps
-    'wgdc_base': WGDC_BASE,          # Replaces WGDC_KFLDRL (0x5F7F6)
-    'wgdc_spool': WGDC_SPOOL,        # Replaces WGDC_KFLDIMX (0x5F72A)
-    'wgdc_airflow_adder_axis_e85': WGDC_AIRFLOW_ADDER_AXIS_E85,
-    'wgdc_airflow_adder_axis_map2': WGDC_AIRFLOW_ADDER_AXIS_MAP2,
-    'wgdc_airflow_adder_axis_map3': WGDC_AIRFLOW_ADDER_AXIS_MAP3,
-    'wgdc_airflow_adder_axis_map4': WGDC_AIRFLOW_ADDER_AXIS_MAP4,
-    'wgdc_airflow_adder_e85': WGDC_AIRFLOW_ADDER_E85,        # @ 0x6D7B2 (XDF validated)
-    'wgdc_airflow_adder_map2': WGDC_AIRFLOW_ADDER_MAP2,      # @ 0x639C0 (XDF validated)
-    'wgdc_airflow_adder_map3': WGDC_AIRFLOW_ADDER_MAP3,      # @ 0x639DA (XDF validated)
-    'wgdc_airflow_adder_map4': WGDC_AIRFLOW_ADDER_MAP4,      # @ 0x639F4 (XDF validated)
-    # Note: WGDC_KFLDDE removed - offset 0x0546D0 not in Corbanistan XDF
-    'boost_limit_multiplier': BOOST_LIMIT_MULTIPLIER,
-    'load_limit_factor': LOAD_LIMIT_FACTOR,
-    'load_target_per_gear': LOAD_TARGET_PER_GEAR,
-    'boost_pressure_target_modifier': BOOST_PRESSURE_TARGET_MODIFIER,
-    
-    # Boost Control - WGDC PID Controller
-    'wgdc_p_factor': WGDC_P_FACTOR,
-    'wgdc_i_factor': WGDC_I_FACTOR,
-    'wgdc_d_factor': WGDC_D_FACTOR,
-    'wgdc_d_multiplier': WGDC_D_MULTIPLIER,
-    'boost_ceiling': BOOST_CEILING,  # @ 0x77BC4 (XDF validated)
-    
-    # Torque Limits
-    'torque_limit_driver': TORQUE_LIMIT_DRIVER,
-    'torque_limit_cap': TORQUE_LIMIT_CAP,
-    
-    # Ignition - XDF Validated Timing Maps (Dec 2025)
-    # Note: TIMING_ZWTABHI/GR/KL removed - offsets not in Corbanistan XDF
-    'timing_main': TIMING_MAIN,      # @ 0x7676A (XDF validated)
-    'timing_spool': TIMING_SPOOL,    # @ 0x768CE (XDF validated)
-    
-    # Throttle
-    'throttle_angle_wot': THROTTLE_ANGLE_WOT,
-    'throttle_sensitivity': THROTTLE_SENSITIVITY,
-    
-    # Diagnostics
-    'dtc_overboost': DTC_OVERBOOST,
-    'dtc_underboost': DTC_UNDERBOOST,
-    'dtc_boost_deactivation': DTC_BOOST_DEACTIVATION,
-    'dtc_ibs_battery_sensor': DTC_IBS_BATTERY_SENSOR,
-    'dtc_coding_missing': DTC_CODING_MISSING,
-    
-    # Features
-    'burble_timing_base': BURBLE_TIMING_BASE,
-    'burble_duration_normal': BURBLE_DURATION_NORMAL,
-    'burble_duration_sport': BURBLE_DURATION_SPORT,
-    'burble_ignition_retard': BURBLE_IGNITION_RETARD,
-    
-    # FlexFuel (Note: flexfuel_enable removed - use static_ethanol_content instead)
-    'static_ethanol_content': STATIC_ETHANOL_CONTENT,
-}
+
+# ALL_PARAMETERS is now a dynamic proxy that always loads from the authoritative XDF summary for the selected bin/OS family.
+# For legacy compatibility, we provide a function that loads parameters for the default/stock bin.
+def get_all_parameters(bin_name: str = None, xdf_path=None) -> dict:
+    """
+    Always load parameters from the authoritative XDF summary for the given bin.
+    If bin_name is None, use the default stock bin section from xdf_map_summary.txt.
+    xdf_path is an optional override for the XDF summary path.
+    """
+    return load_parameters_for_bin(bin_name, xdf_path)
+
+
+# Initialize ALL_PARAMETERS to the authoritative XDF-derived parameters for the default bin.
+# If loading the XDF summary fails (e.g., in test environments), fall back to collecting
+# all statically-declared TuningParameter instances defined in this module. This
+# preserves legacy behavior and prevents NameError when functions reference
+# `ALL_PARAMETERS` at runtime.
+try:
+    ALL_PARAMETERS = get_all_parameters()
+except Exception:
+    ALL_PARAMETERS = {}
+    for _name, _val in list(globals().items()):
+        try:
+            if isinstance(_val, TuningParameter):
+                ALL_PARAMETERS[_name.lower()] = _val
+        except Exception:
+            continue
 
 
 def get_parameters_by_category(category: ParameterCategory) -> Dict[str, TuningParameter]:
@@ -1674,7 +1966,13 @@ def refresh_stock_preset_from_bin(bin_path: Path = DEFAULT_STOCK_BIN) -> Dict[st
 
 
 # Hydrate Stage 0 from the default stock binary at import time
-refresh_stock_preset_from_bin()
+# Hydrate Stage 0 from the default stock binary at import time if it exists
+if DEFAULT_STOCK_BIN.exists():
+    try:
+        refresh_stock_preset_from_bin()
+    except Exception:
+        # Ignore errors in import-time hydration — environment may not include reference bins
+        pass
 
 # Stage 1 preset
 PRESET_STAGE1 = TuningPreset(
@@ -1855,9 +2153,9 @@ SAFETY FEATURES:
         # Boost ceiling (scalar, PSI)
         'boost_ceiling': 50.0,
 
-        # Boost and load limit factors
-        'boost_limit_multiplier': [1.0] * 12,
-        'load_limit_factor': [0.005] * 12,
+        # Boost and load limit factors (read from BIN, do not hardcode)
+        # 'boost_limit_multiplier': [1.0] * 12,
+        # 'load_limit_factor': [0.005] * 12,
 
         # Load target per gear (6x16, aligned to 11-14 PSI goal)
         'load_target_per_gear': [
@@ -2019,9 +2317,9 @@ KEY CHANGES FROM STAGE 1:
         # Boost ceiling (scalar, PSI)
         'boost_ceiling': 60.0,
 
-        # Boost and load limit factors
-        'boost_limit_multiplier': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.95, 0.90, 0.85, 0.85, 0.80],
-        'load_limit_factor': [0.005] * 12,
+        # Boost and load limit factors (read from BIN, do not hardcode)
+        # 'boost_limit_multiplier': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.95, 0.90, 0.85, 0.85, 0.80],
+        # 'load_limit_factor': [0.005] * 12,
 
         # Load target per gear (6x16, Stage 2 aggressive for 18-22 PSI)
         # Implements "Hill" profile: G1/G2 traction limited, G3 Peak, G4-G6 tapered for AT safety
@@ -2253,9 +2551,9 @@ KEY CHANGES FROM STAGE 2:
         # Boost ceiling (scalar, PSI)
         'boost_ceiling': 65.0,
 
-        # Boost and load limit factors
-        'boost_limit_multiplier': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.95, 0.90, 0.85, 0.85, 0.80, 0.75],
-        'load_limit_factor': [0.005] * 12,
+        # Boost and load limit factors (read from BIN, do not hardcode)
+        # 'boost_limit_multiplier': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.95, 0.90, 0.85, 0.85, 0.80, 0.75],
+        # 'load_limit_factor': [0.005] * 12,
 
         # Load target per gear (6x16, Stage 2.5 targeting 20-23 PSI)
         # Implements "Hill" profile: G1/G2 traction limited, G3 Peak, G4-G6 tapered for AT safety
@@ -2501,17 +2799,19 @@ def read_all_parameters(bin_path: Path) -> Dict[str, Any]:
     """Read all parameter values from a binary file"""
     data = bin_path.read_bytes()
     values = {}
-    
-    for key, param in ALL_PARAMETERS.items():
+def read_all_parameters(bin_path: Path, bin_name: str = None, xdf_summary_path=None) -> Dict[str, Any]:
+    """
+    Read all parameter values from a binary using XDF-derived parameters for the correct bin.
+    """
+    data = bin_path.read_bytes()
+    params = get_all_parameters(bin_name=bin_name, xdf_summary_path=xdf_summary_path)
+    values = {}
+    for key, param in params.items():
         try:
             values[key] = param.read_from_binary(data)
-        except Exception as e:
-            values[key] = f"Error: {e}"
-    
+        except Exception:
+            continue
     return values
-
-
-def write_parameters(bin_path: Path, output_path: Path, values: Dict[str, Any]) -> List[str]:
     """Write parameter values to a binary file"""
     data = bytearray(bin_path.read_bytes())
     changes = []

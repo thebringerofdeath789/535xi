@@ -439,6 +439,24 @@ def create_qt_widget(controller: FlasherController, parent: Optional[Any] = None
                 try:
                     meta = self._ctrl.select_file(path)
                     self.result_label.setText(f"Selected {meta['path']} ({meta['size']} bytes)")
+                    # Try to auto-populate offset/size if file matches a validated map
+                    valid_maps = getattr(self._ctrl.validated_maps, 'VALIDATED_MAPS', None)
+                    if valid_maps and isinstance(valid_maps, dict):
+                        found = False
+                        for offset, info in valid_maps.items():
+                            if isinstance(info, dict):
+                                sz = info.get('size')
+                                if sz == meta['size']:
+                                    # Auto-fill offset/size fields
+                                    self.offset_edit.setText(hex(offset))
+                                    self.size_edit.setText(str(sz))
+                                    self.result_label.setText(f"Selected {meta['path']} ({meta['size']} bytes)\nAuto-filled offset: {hex(offset)}, size: {sz}")
+                                    found = True
+                                    break
+                        if not found:
+                            self.result_label.setText(f"Selected {meta['path']} ({meta['size']} bytes)\nNo validated map found for this size. Please enter a valid offset and size.")
+                    else:
+                        self.result_label.setText(f"Selected {meta['path']} ({meta['size']} bytes)\n(Validated map info unavailable)")
                 except Exception as e:
                     _log_exception("select_file failed", e)
                     self.result_label.setText(f'Error selecting file: {e}')
@@ -459,7 +477,7 @@ def create_qt_widget(controller: FlasherController, parent: Optional[Any] = None
         def _on_validate(self):
             off = self._parse_offset(self.offset_edit.text())
             if off is None:
-                self.result_label.setText('Invalid offset')
+                self.result_label.setText('Invalid offset. Please enter a valid hex or decimal offset (e.g. 0x57B58).')
                 return
             size_text = self.size_edit.text().strip()
             size = None
@@ -468,16 +486,19 @@ def create_qt_widget(controller: FlasherController, parent: Optional[Any] = None
                     size = int(size_text)
                 except Exception as exc:
                     _log_exception("parse size failed", exc)
-                    self.result_label.setText('Invalid size')
+                    self.result_label.setText('Invalid size. Please enter a valid integer size in bytes.')
                     return
 
             res = self._ctrl.validate_offset(off, size)
             if res.get('safe'):
-                self.result_label.setText('Offset safe: ' + (res.get('reason') or ''))
+                self.result_label.setText('Offset safe: ' + (res.get('reason') or '') + '\nYou may now prepare or flash this region.')
                 self.prepare_btn.setEnabled(True)
                 self.execute_btn.setEnabled(True)
             else:
-                self.result_label.setText('Offset NOT safe: ' + (res.get('reason') or ''))
+                # Add more guidance if validation fails
+                msg = 'Offset NOT safe: ' + (res.get('reason') or '')
+                msg += '\nCheck that you are using a validated map region and correct offset/size.'
+                self.result_label.setText(msg)
                 self.prepare_btn.setEnabled(False)
                 self.execute_btn.setEnabled(False)
 

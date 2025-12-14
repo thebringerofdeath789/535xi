@@ -136,8 +136,10 @@ def main(argv: Optional[list[str]] = None) -> None:
             self._status_sw_id.setStyleSheet("color: #0f9;")
             self.statusBar().addWidget(self._status_sw_id)
             
-            # Stretch to separate from right side
-            self.statusBar().addStretch()
+            # Spacer to separate from right side (QStatusBar does not support addStretch)
+            spacer = QtWidgets.QWidget()
+            spacer.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+            self.statusBar().addWidget(spacer)
             
             # Last operation result
             self._status_operation = QtWidgets.QLabel("Ready")

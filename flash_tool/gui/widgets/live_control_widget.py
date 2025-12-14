@@ -60,8 +60,7 @@ class LiveControlWidget(QtWidgets.QWidget):
         hlayout.addStretch()
         hlayout.addWidget(help_btn)
         if self.layout() is None:
-            vlayout = QtWidgets.QVBoxLayout(self)
-            self.setLayout(vlayout)
+            vlayout = QtWidgets.QVBoxLayout(self)  # This already sets the layout; do not call self.setLayout again
         self.layout().addLayout(hlayout)
 
         # Predefined WGDC / boost-related RAM variables (0xD000xxxx)

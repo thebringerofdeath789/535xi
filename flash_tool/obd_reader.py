@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 BMW N54 OBD-II Reader - Standard Diagnostic Functions
 =====================================================
@@ -40,8 +41,12 @@ NOTE: python-obd is not compatible with Python 3.13+.
 """
 
 
-import obd
-OBD_AVAILABLE = True
+try:
+    import obd
+    OBD_AVAILABLE = True
+except Exception:
+    obd = None
+    OBD_AVAILABLE = False
 
 from typing import Optional, List, Dict, Any, Tuple, TYPE_CHECKING
 import logging

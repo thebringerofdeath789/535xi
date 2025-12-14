@@ -38,13 +38,18 @@ except ImportError:
         QT_VERSION = None
         Signal = None
 
-# Import tuning parameters
+
+# Import tuning parameters and dynamic XDF loader
 try:
     from flash_tool.tuning_parameters import (
         ALL_PARAMETERS, ALL_PRESETS, TuningParameter, TuningPreset,
         ParameterCategory, SafetyLevel, ParameterType,
-        get_parameters_by_category, read_all_parameters, write_parameters
+        get_parameters_by_category, read_all_parameters, write_parameters,
+        list_available_bins, load_parameters_for_bin, port_presets_to_bin
     )
+from flash_tool.software_detector import detect_software_from_bin
+from flash_tool.xdf_authority import get_authoritative_xdf_for_os_family, get_authoritative_xdf_for_bin
+
     HAS_TUNING = True
 except ImportError:
     HAS_TUNING = False
@@ -1101,10 +1106,18 @@ class LoadTargetTab(qw.QWidget):
     def load_values(self, values: Dict[str, Any]):
         for key, editor in self.editors.items():
             if key in values:
-                if isinstance(values[key], list):
-                    editor.setValue(values[key])
-                else:
-                    editor.setValue(values[key])
+                val = values[key]
+                # ParameterSpinBox expects a scalar, ArrayEditor/TableEditor expect a list
+                if hasattr(editor, 'setValue'):
+                    if editor.__class__.__name__ in ('ParameterSpinBox', 'ParameterCheckBox'):
+                        # Only pass scalar
+                        if isinstance(val, (list, tuple)):
+                            if len(val) > 0:
+                                editor.setValue(val[0])
+                        else:
+                            editor.setValue(val)
+                    else:
+                        editor.setValue(val)
     
     def get_values(self) -> Dict[str, Any]:
         result = {}
@@ -1407,6 +1420,7 @@ class ComprehensiveTuningEditor(qw.QWidget):
         self._loaded_file = None
         self._setup_ui()
     
+
     def _setup_ui(self):
         layout = qw.QVBoxLayout(self)
         layout.setSpacing(10)
@@ -1417,6 +1431,19 @@ class ComprehensiveTuningEditor(qw.QWidget):
         title.setStyleSheet("font-size: 16px; font-weight: bold;")
         title_layout.addWidget(title)
         title_layout.addStretch()
+
+        # Bin/XDF selection
+        self.bin_combo = qw.QComboBox()
+        self.bin_combo.addItem("-- Select Bin/XDF --")
+        try:
+            bins = list_available_bins()
+            for b in bins:
+                self.bin_combo.addItem(b)
+        except Exception:
+            pass
+        self.bin_combo.currentTextChanged.connect(self._on_bin_changed)
+        title_layout.addWidget(qw.QLabel("Bin/XDF:"))
+        title_layout.addWidget(self.bin_combo)
 
         # File info
         self.file_label = qw.QLabel("No file loaded")
@@ -1466,12 +1493,95 @@ class ComprehensiveTuningEditor(qw.QWidget):
         # Preset and file buttons
         btn_layout = qw.QHBoxLayout()
         
-        # Preset dropdown
+
+        # Preset dropdown (will be updated on bin change)
         btn_layout.addWidget(qw.QLabel("Preset:"))
         self.preset_combo = qw.QComboBox()
-        self.preset_combo.addItems(["-- Select --"] + list(ALL_PRESETS.keys()))
+        self._update_presets_combo()
         self.preset_combo.currentTextChanged.connect(self._on_preset_changed)
         btn_layout.addWidget(self.preset_combo)
+            def _on_bin_changed(self, bin_name: str):
+                if bin_name == "-- Select Bin/XDF --":
+                    # Restore static mode
+                    global ALL_PARAMETERS
+                    from flash_tool.tuning_parameters import ALL_PARAMETERS as STATIC_PARAMS
+                    ALL_PARAMETERS = STATIC_PARAMS
+                    self._dynamic_presets = {}
+                    self._rebuild_tabs()
+                    self.status_label.setText("Static mode: default parameter set loaded.")
+                    self._update_presets_combo()
+                    return
+                try:
+                    # Dynamically load parameters for selected bin
+                    params = load_parameters_for_bin(bin_name)
+                    self._current_values = {}
+                    # Replace ALL_PARAMETERS globally for this session (for tab editors)
+                    global ALL_PARAMETERS
+                    ALL_PARAMETERS = params
+                    # Generate dynamic presets for this bin
+                    try:
+                        self._dynamic_presets = port_presets_to_bin(bin_name)
+                    except Exception:
+                        # Fallback: generate an all-zero/default preset if porting fails
+                        default_values = {}
+                        for k, p in params.items():
+                            if p.count == 1:
+                                default_values[k] = 0
+                            else:
+                                default_values[k] = [0] * p.count
+                        self._dynamic_presets = {f"{bin_name}_default": TuningPreset(
+                            name=f"{bin_name} Default",
+                            description=f"Auto-generated default for {bin_name}",
+                            values=default_values
+                        )}
+                    # Rebuild all tabs with new parameters
+                    self._rebuild_tabs()
+                    from flash_tool.xdf_authority import get_authoritative_xdf_for_bin
+                    xdf_file = get_authoritative_xdf_for_bin(bin_name)
+                    self.status_label.setText(f"Loaded parameters for bin: {bin_name}  (Authoritative XDF: {xdf_file.name})")
+                    self._update_presets_combo(bin_name)
+                except Exception as e:
+                    self.status_label.setText(f"Failed to load bin: {e}")
+
+            def _rebuild_tabs(self):
+                # Remove and recreate all tabs with new parameters
+                self.tabs.clear()
+                self.performance_tab = PerformanceTab()
+                self.tabs.addTab(self._wrap_in_scroll(self.performance_tab), "Performance")
+                self.antilag_tab = AntilagTab()
+                self.tabs.addTab(self._wrap_in_scroll(self.antilag_tab), "Antilag/Launch")
+                self.wgdc_tab = WGDCTab()
+                self.tabs.addTab(self._wrap_in_scroll(self.wgdc_tab), "WGDC/Boost")
+                self.ignition_tab = IgnitionTab()
+                self.tabs.addTab(self._wrap_in_scroll(self.ignition_tab), "Ignition")
+                self.torque_tab = TorqueTab()
+                self.tabs.addTab(self._wrap_in_scroll(self.torque_tab), "Torque Limits")
+                self.load_target_tab = LoadTargetTab()
+                self.tabs.addTab(self._wrap_in_scroll(self.load_target_tab), "Load Target")
+                self.flexfuel_tab = FlexFuelTab()
+                self.tabs.addTab(self._wrap_in_scroll(self.flexfuel_tab), "FlexFuel")
+                self.features_tab = FeaturesTab()
+                self.tabs.addTab(self._wrap_in_scroll(self.features_tab), "Features")
+
+            def _wrap_in_scroll(self, widget: qw.QWidget) -> qw.QScrollArea:
+                scroll = qw.QScrollArea()
+                scroll.setWidget(widget)
+                scroll.setWidgetResizable(True)
+                scroll.setFrameShape(qw.QFrame.NoFrame)
+                return scroll
+
+            def _update_presets_combo(self, bin_name: str = None):
+                self.preset_combo.blockSignals(True)
+                self.preset_combo.clear()
+                self.preset_combo.addItem("-- Select --")
+                # Add dynamic preset if available
+                if hasattr(self, '_dynamic_presets') and self._dynamic_presets:
+                    for k, v in self._dynamic_presets.items():
+                        self.preset_combo.addItem(k)
+                # Add static presets
+                for k in ALL_PRESETS.keys():
+                    self.preset_combo.addItem(k)
+                self.preset_combo.blockSignals(False)
         
         btn_layout.addStretch()
         
@@ -1499,13 +1609,22 @@ class ComprehensiveTuningEditor(qw.QWidget):
         print(f"DEBUG: Preset changed to: {preset_name}")
         if preset_name == "-- Select --":
             return
-        
+        # Check dynamic presets first
+        if hasattr(self, '_dynamic_presets') and preset_name in self._dynamic_presets:
+            preset = self._dynamic_presets[preset_name]
+            print(f"DEBUG: Applying {len(preset.values)} values from dynamic preset")
+            self._apply_values(preset.values)
+            self.status_label.setText(f"Loaded preset: {preset.name} - {preset.description}")
+            self.preset_combo.blockSignals(True)
+            self.preset_combo.setCurrentText("-- Select --")
+            self.preset_combo.blockSignals(False)
+            return
+        # Static presets fallback
         if preset_name in ALL_PRESETS:
             preset = ALL_PRESETS[preset_name]
             print(f"DEBUG: Applying {len(preset.values)} values from preset")
             self._apply_values(preset.values)
             self.status_label.setText(f"Loaded preset: {preset.name} - {preset.description}")
-            # Reset combo box to allow re-selecting the same preset
             self.preset_combo.blockSignals(True)
             self.preset_combo.setCurrentText("-- Select --")
             self.preset_combo.blockSignals(False)
@@ -1549,13 +1668,46 @@ class ComprehensiveTuningEditor(qw.QWidget):
         )
         if filename:
             try:
-                values = read_all_parameters(Path(filename))
-                # Filter out errors
-                clean_values = {k: v for k, v in values.items() if not isinstance(v, str)}
-                self._apply_values(clean_values)
-                self._loaded_file = filename
-                self.file_label.setText(f"Loaded: {Path(filename).name}")
-                self.status_label.setText(f"Loaded {len(clean_values)} parameters from {filename}")
+                # Detect software version and choose authoritative XDF for offsets
+                from flash_tool.software_detector import detect_software_from_bin
+                from flash_tool.xdf_authority import get_authoritative_xdf_for_os_family
+                from flash_tool.tuning_parameters import port_presets_to_bin
+
+                sw_info = detect_software_from_bin(filename)
+                sw_version = sw_info.get('software_version') if isinstance(sw_info, dict) else sw_info
+
+                if sw_version:
+                    xdf_path = get_authoritative_xdf_for_os_family(sw_version)
+                    bin_section = Path(xdf_path).stem
+
+                    # Load per-bin parameters and set ALL_PARAMETERS globally
+                    params = load_parameters_for_bin(bin_section)
+                    global ALL_PARAMETERS
+                    ALL_PARAMETERS = params
+
+                    # Read values using per-bin offsets
+                    values = read_all_parameters(Path(filename))
+                    clean_values = {k: v for k, v in values.items() if not isinstance(v, str)}
+                    self._apply_values(clean_values)
+                    self._loaded_file = filename
+                    self.file_label.setText(f"Loaded: {Path(filename).name}")
+                    # Generate dynamic presets for this bin
+                    try:
+                        self._dynamic_presets = port_presets_to_bin(bin_section)
+                    except Exception:
+                        self._dynamic_presets = {}
+                    self._update_presets_combo(bin_section)
+                    self.status_label.setText(f"Loaded {len(clean_values)} parameters from {filename} (Detected: {sw_version}, XDF: {Path(xdf_path).name})")
+                else:
+                    # Fallback - read using current ALL_PARAMETERS
+                    values = read_all_parameters(Path(filename))
+                    clean_values = {k: v for k, v in values.items() if not isinstance(v, str)}
+                    self._apply_values(clean_values)
+                    self._loaded_file = filename
+                    self.file_label.setText(f"Loaded: {Path(filename).name}")
+                    self._dynamic_presets = {}
+                    self._update_presets_combo()
+                    self.status_label.setText(f"Loaded {len(clean_values)} parameters from {filename} (No software version detected)")
             except Exception as e:
                 qw.QMessageBox.critical(self, "Load Error", f"Failed to load file:\n{e}")
     
