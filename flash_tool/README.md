@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # BMW N54 CAN/UDS Flash & Tuning Tool
 
 **Description:**
@@ -10,6 +11,8 @@ Gregory King
 MIT License
 
 ---
+=======
+>>>>>>> 938335846dcad22b12a954a2d28f714dd6030c14
 ## Requirements
 
 - Python 3.10+
@@ -366,3 +369,13 @@ flash_tool/
 
 ---
 
+<<<<<<< HEAD
+=======
+## Requirements
+
+- Python 3.10+
+- python-can
+- PySide6 (GUI)
+- PCAN-USB adapter (flash operations)
+- K+DCAN cable (OBD diagnostics)
+>>>>>>> 938335846dcad22b12a954a2d28f714dd6030c14
